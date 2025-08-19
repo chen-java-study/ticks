@@ -1,0 +1,23 @@
+# UI Framework
+PyQt5>=5.15.4
+
+# Browser Automation
+selenium>=4.1.0
+webdriver-manager>=3.5.2
+
+# HTTP Requests
+requests>=2.27.1
+aiohttp>=3.8.1
+
+# Image Processing (Captcha Recognition)
+Pillow>=9.0.1
+opencv-python>=4.5.5.64
+pytesseract>=0.3.9
+
+# Utilities
+python-dotenv>=0.19.2
+pydantic>=1.9.0
+loguru>=0.6.0
+
+# Notifications
+python-telegram-bot>=13.11

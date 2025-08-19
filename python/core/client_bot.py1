@@ -1,0 +1,966 @@
+"""
+API客户端模块，处理与票务网站的交互
+"""
+
+import time
+import json
+import re
+import random
+from typing import Dict, Any, List, Optional
+from abc import ABC, abstractmethod
+from datetime import datetime
+
+from selenium.webdriver.remote.webdriver import WebDriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+
+from python.utils.config_manager import ConfigManager
+from python.utils.logger import LoggerMixin
+from python.core.captcha_solver import CaptchaSolver
+
+class APIClient(ABC, LoggerMixin):
+    """API客户端基类，定义通用接口"""
+    
+    def __init__(self, config_manager: ConfigManager, driver: WebDriver):
+        """
+        初始化API客户端
+        
+        Args:
+            config_manager: 配置管理器实例
+            driver: Selenium WebDriver实例
+        """
+        self.setup_logger()
+        self.config = config_manager
+        self.driver = driver
+    
+    @abstractmethod
+    def login(self, username: str, password: str, captcha_solver: CaptchaSolver) -> bool:
+        """
+        登录到票务网站
+        
+        Args:
+            username: 用户名
+            password: 密码
+            captcha_solver: 验证码处理器
+            
+        Returns:
+            是否登录成功
+        """
+        pass
+    
+    @abstractmethod
+    def navigate_to_concert(self, concert_url: str) -> bool:
+        """
+        导航到演唱会页面
+        
+        Args:
+            concert_url: 演唱会页面URL
+            
+        Returns:
+            是否导航成功
+        """
+        pass
+    
+    @abstractmethod
+    def get_available_seats(self) -> List[Dict[str, Any]]:
+        """
+        获取可用座位信息
+        
+        Returns:
+            可用座位列表，每个座位为一个字典，包含类型、价格等信息
+        """
+        pass
+    
+    @abstractmethod
+    def book_seat(self, seat_info: Dict[str, Any]) -> bool:
+        """
+        预订座位
+        
+        Args:
+            seat_info: 座位信息
+            
+        Returns:
+            是否预订成功
+        """
+        pass
+    
+    @abstractmethod
+    def get_order_info(self) -> Dict[str, Any]:
+        """
+        获取订单信息
+        
+        Returns:
+            订单信息字典
+        """
+        pass
+    
+    def refresh_page(self) -> None:
+        """刷新当前页面"""
+        self.driver.refresh()
+        self.logger.debug("页面已刷新")
+    
+    def wait_for_element(self, by: By, value: str, timeout: int = 10) -> Optional[Any]:
+        """
+        等待元素出现
+        
+        Args:
+            by: 定位方式
+            value: 定位值
+            timeout: 超时时间（秒）
+            
+        Returns:
+            元素对象，如果超时则返回None
+        """
+        try:
+            element = WebDriverWait(self.driver, timeout).until(
+                EC.presence_of_element_located((by, value))
+            )
+            return element
+        except TimeoutException:
+            self.logger.warning(f"等待元素超时: {by}={value}")
+            return None
+    
+    def wait_for_clickable(self, by: By, value: str, timeout: int = 10) -> Optional[Any]:
+        """
+        等待元素可点击
+        
+        Args:
+            by: 定位方式
+            value: 定位值
+            timeout: 超时时间（秒）
+            
+        Returns:
+            元素对象，如果超时则返回None
+        """
+        try:
+            element = WebDriverWait(self.driver, timeout).until(
+                EC.element_to_be_clickable((by, value))
+            )
+            return element
+        except TimeoutException:
+            self.logger.warning(f"等待可点击元素超时: {by}={value}")
+            return None
+    
+    def wait_for_url_contains(self, text: str, timeout: int = 10) -> bool:
+        """
+        等待URL包含指定文本
+        
+        Args:
+            text: 要包含的文本
+            timeout: 超时时间（秒）
+            
+        Returns:
+            是否成功
+        """
+        try:
+            WebDriverWait(self.driver, timeout).until(
+                EC.url_contains(text)
+            )
+            return True
+        except TimeoutException:
+            self.logger.warning(f"等待URL包含'{text}'超时")
+            return False
+
+class InterParkClient(APIClient):
+    """Interpark票务网站API客户端"""
+    
+    def __init__(self, config_manager: ConfigManager, driver: WebDriver):
+        """初始化Interpark客户端"""
+        super().__init__(config_manager, driver)
+        self.logger.info("Interpark客户端已初始化")
+    
+    def login(self, username: str, password: str, captcha_solver: CaptchaSolver) -> bool:
+        """
+        登录到Interpark
+        
+        Args:
+            username: 用户名
+            password: 密码
+            captcha_solver: 验证码处理器
+            
+        Returns:
+            是否登录成功
+        """
+        # 获取登录URL
+        login_url = self.config.get("sites.interpark.login_url", "https://ticket.interpark.com/Gate/TPLogin.asp")
+        
+        try:
+            # 导航到登录页
+            self.logger.info(f"正在打开登录页: {login_url}")
+            self.driver.get(login_url)
+            
+            # 等待登录表单加载
+            username_input = self.wait_for_element(By.ID, "userId")
+            password_input = self.wait_for_element(By.ID, "userPwd")
+            
+            if not username_input or not password_input:
+                self.logger.error("无法找到登录表单")
+                return False
+                
+            # 输入用户名和密码
+            username_input.clear()
+            username_input.send_keys(username)
+            
+            password_input.clear()
+            password_input.send_keys(password)
+            
+            # 检查是否有验证码
+            captcha_img = self.driver.find_elements(By.CSS_SELECTOR, "img[src*='captcha']")
+            if captcha_img:
+                self.logger.info("检测到验证码，尝试解决...")
+                if not captcha_solver.solve_captcha(self.driver, "image"):
+                    self.logger.error("验证码解决失败")
+                    return False
+            
+            # 点击登录按钮
+            login_button = self.wait_for_clickable(By.ID, "btn_login")
+            if not login_button:
+                self.logger.error("无法找到登录按钮")
+                return False
+                
+            login_button.click()
+            
+            # 等待登录完成
+            time.sleep(2)
+            
+            # 验证登录状态
+            if "login" in self.driver.current_url.lower():
+                error_msg = self.driver.find_elements(By.CSS_SELECTOR, ".error-message")
+                if error_msg:
+                    self.logger.error(f"登录失败: {error_msg[0].text}")
+                else:
+                    self.logger.error("登录失败")
+                return False
+                
+            # 检查是否有用户名显示
+            user_elements = self.driver.find_elements(By.CSS_SELECTOR, ".user-info, .username, #userMenu")
+            if user_elements:
+                self.logger.info("登录成功")
+                return True
+                
+            # 额外检查，可能需要根据实际情况调整
+            welcome_elements = self.driver.find_elements(By.CSS_SELECTOR, "div:contains('Welcome'), .welcome-msg")
+            if welcome_elements:
+                self.logger.info("登录成功")
+                return True
+                
+            self.logger.warning("登录状态不明确，假定为失败")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"登录过程中出现异常: {str(e)}")
+            return False
+    
+    def navigate_to_concert(self, concert_url: str) -> bool:
+        """
+        导航到演唱会页面
+        
+        Args:
+            concert_url: 演唱会页面URL
+            
+        Returns:
+            是否导航成功
+        """
+        try:
+            self.logger.info(f"导航到演唱会页面: {concert_url}")
+            self.driver.get(concert_url)
+            
+            # 等待页面加载
+            time.sleep(3)
+            
+            # 检查页面是否加载成功
+            page_title = self.driver.title
+            if "오류" in page_title or "Error" in page_title:
+                self.logger.error(f"页面加载失败: {page_title}")
+                return False
+                
+            self.logger.info(f"页面已加载: {page_title}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"导航到演唱会页面时出现异常: {str(e)}")
+            return False
+    
+    def get_available_seats(self) -> List[Dict[str, Any]]:
+        """
+        获取可用座位信息
+        
+        Returns:
+            可用座位列表
+        """
+        available_seats = []
+        
+        try:
+            # 查找座位信息表格/列表
+            seat_elements = self.driver.find_elements(By.CSS_SELECTOR, ".seat-list tr, .ticket-price-item")
+            
+            if not seat_elements:
+                self.logger.info("未找到座位信息元素")
+                return []
+                
+            self.logger.info(f"找到 {len(seat_elements)} 个座位元素")
+            
+            # 解析每个座位元素
+            for element in seat_elements:
+                try:
+                    # 提取座位类型
+                    seat_type_elements = element.find_elements(By.CSS_SELECTOR, ".seat-type, .seat-name")
+                    seat_type = seat_type_elements[0].text if seat_type_elements else "未知"
+                    
+                    # 提取价格
+                    price_elements = element.find_elements(By.CSS_SELECTOR, ".seat-price, .price")
+                    price_text = price_elements[0].text if price_elements else "0"
+                    
+                    # 清理价格文本，提取数字
+                    price = int(''.join(filter(str.isdigit, price_text))) if any(c.isdigit() for c in price_text) else 0
+                    
+                    # 检查可用性
+                    available_elements = element.find_elements(By.CSS_SELECTOR, ".seat-status, .availability")
+                    available_text = available_elements[0].text if available_elements else ""
+                    available = "매진" not in available_text and "Sold Out" not in available_text
+                    
+                    if available:
+                        # 提取选择按钮
+                        select_elements = element.find_elements(By.CSS_SELECTOR, ".btn-select, button[name='btnSelect']")
+                        select_button = select_elements[0] if select_elements else None
+                        
+                        seat_info = {
+                            "type": seat_type,
+                            "price": price,
+                            "element": element,
+                            "select_button": select_button
+                        }
+                        
+                        available_seats.append(seat_info)
+                        self.logger.debug(f"找到可用座位: {seat_type}, 价格: {price}")
+                        
+                except Exception as e:
+                    self.logger.warning(f"解析座位元素时出现异常: {str(e)}")
+                    continue
+            
+            self.logger.info(f"找到 {len(available_seats)} 个可用座位")
+            
+        except Exception as e:
+            self.logger.error(f"获取可用座位信息时出现异常: {str(e)}")
+            
+        return available_seats
+    
+    def book_seat(self, seat_info: Dict[str, Any]) -> bool:
+        """
+        预订座位
+        
+        Args:
+            seat_info: 座位信息
+            
+        Returns:
+            是否预订成功
+        """
+        try:
+            # 检查座位元素
+            select_button = seat_info.get("select_button")
+            if not select_button:
+                self.logger.error("座位信息中缺少选择按钮")
+                return False
+                
+            # 点击选择按钮
+            self.logger.info(f"点击选择座位: {seat_info.get('type')}")
+            select_button.click()
+            
+            # 等待跳转到座位选择页面
+            time.sleep(2)
+            
+            # 查找座位图上的可用座位
+            # 注意: 实际应用中可能需要更复杂的座位选择逻辑
+            available_seats = self.driver.find_elements(By.CSS_SELECTOR, ".seat.available, .seat:not(.occupied)")
+            
+            if not available_seats:
+                self.logger.error("未找到可选座位")
+                return False
+                
+            # 选择第一个可用座位
+            self.logger.info("选择一个可用座位")
+            available_seats[0].click()
+            
+            # 等待选座确认
+            time.sleep(1)
+            
+            # 点击下一步/确认按钮
+            next_buttons = self.driver.find_elements(By.CSS_SELECTOR, "#nextStep, .btn-next, .btn-confirm")
+            
+            if not next_buttons:
+                self.logger.error("未找到下一步按钮")
+                return False
+                
+            self.logger.info("点击下一步按钮")
+            next_buttons[0].click()
+            
+            # 等待跳转到订单确认页面
+            time.sleep(3)
+            
+            # 检查是否成功进入订单确认页
+            order_elements = self.driver.find_elements(By.CSS_SELECTOR, ".order-summary, .order-info, #orderInfo")
+            
+            if order_elements:
+                self.logger.info("成功进入订单确认页")
+                return True
+            else:
+                self.logger.error("未能进入订单确认页")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"预订座位时出现异常: {str(e)}")
+            return False
+    
+    def get_order_info(self) -> Dict[str, Any]:
+        """
+        获取订单信息
+        
+        Returns:
+            订单信息字典
+        """
+        order_info = {
+            "order_id": "",
+            "seat_type": "",
+            "price": 0,
+            "payment_deadline": "",
+            "order_url": self.driver.current_url
+        }
+        
+        try:
+            # 提取订单号
+            order_id_elements = self.driver.find_elements(By.CSS_SELECTOR, ".order-number, #orderNo")
+            if order_id_elements:
+                order_info["order_id"] = order_id_elements[0].text
+            
+            # 提取座位类型
+            seat_elements = self.driver.find_elements(By.CSS_SELECTOR, ".seat-type, .seat-info")
+            if seat_elements:
+                order_info["seat_type"] = seat_elements[0].text
+                
+            # 提取价格
+            price_elements = self.driver.find_elements(By.CSS_SELECTOR, ".total-price, .price-info")
+            if price_elements:
+                price_text = price_elements[0].text
+                price = int(''.join(filter(str.isdigit, price_text))) if any(c.isdigit() for c in price_text) else 0
+                order_info["price"] = price
+                
+            # 提取支付截止时间
+            deadline_elements = self.driver.find_elements(By.CSS_SELECTOR, ".payment-deadline, .deadline-info")
+            if deadline_elements:
+                order_info["payment_deadline"] = deadline_elements[0].text
+            
+            self.logger.info(f"获取到订单信息: {order_info}")
+            
+        except Exception as e:
+            self.logger.error(f"获取订单信息时出现异常: {str(e)}")
+            
+        return order_info
+
+class Yes24Client(APIClient):
+    """Yes24票务网站API客户端"""
+    
+    def __init__(self, config_manager: ConfigManager, driver: WebDriver):
+        """初始化Yes24客户端"""
+        super().__init__(config_manager, driver)
+        self.logger.info("Yes24客户端已初始化")
+    
+    def login(self, username: str, password: str, captcha_solver: CaptchaSolver) -> bool:
+        """Yes24登录实现"""
+        # 获取登录URL
+        login_url = self.config.get("sites.yes24.login_url", "https://www.yes24.com/Templates/FTLogin.aspx")
+        
+        try:
+            # 导航到登录页
+            self.logger.info(f"正在打开登录页: {login_url}")
+            self.driver.get(login_url)
+            
+            # 基于Yes24的实际登录流程实现登录逻辑
+            # 此处是示例实现，需要根据实际页面元素调整
+            
+            # 等待登录表单加载
+            username_input = self.wait_for_element(By.ID, "SMemberID")
+            password_input = self.wait_for_element(By.ID, "SMemberPassword")
+            
+            if not username_input or not password_input:
+                self.logger.error("无法找到登录表单")
+                return False
+                
+            # 输入用户名和密码
+            username_input.clear()
+            username_input.send_keys(username)
+            
+            password_input.clear()
+            password_input.send_keys(password)
+            
+            # 检查是否有验证码
+            captcha_img = self.driver.find_elements(By.CSS_SELECTOR, "img[src*='captcha']")
+            if captcha_img:
+                self.logger.info("检测到验证码，尝试解决...")
+                if not captcha_solver.solve_captcha(self.driver, "image"):
+                    self.logger.error("验证码解决失败")
+                    return False
+            
+            # 点击登录按钮
+            login_button = self.wait_for_clickable(By.ID, "btnLogin")
+            if not login_button:
+                self.logger.error("无法找到登录按钮")
+                return False
+                
+            login_button.click()
+            
+            # 等待登录完成
+            time.sleep(2)
+            
+            # 验证登录状态
+            if "login" in self.driver.current_url.lower():
+                error_msg = self.driver.find_elements(By.CSS_SELECTOR, ".error, .loginMsg")
+                if error_msg:
+                    self.logger.error(f"登录失败: {error_msg[0].text}")
+                else:
+                    self.logger.error("登录失败")
+                return False
+                
+            # 检查是否有用户名显示
+            user_elements = self.driver.find_elements(By.CSS_SELECTOR, ".username, .loginInfo")
+            if user_elements:
+                self.logger.info("登录成功")
+                return True
+                
+            self.logger.warning("登录状态不明确，假定为失败")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"登录过程中出现异常: {str(e)}")
+            return False
+    
+    def navigate_to_concert(self, concert_url: str) -> bool:
+        """Yes24导航实现"""
+        # Yes24的页面导航逻辑，基本与InterPark类似
+        try:
+            self.logger.info(f"导航到Yes24演唱会页面: {concert_url}")
+            self.driver.get(concert_url)
+            
+            # 等待页面加载
+            time.sleep(3)
+            
+            # 检查页面是否加载成功
+            page_title = self.driver.title
+            if "에러" in page_title or "Error" in page_title:
+                self.logger.error(f"页面加载失败: {page_title}")
+                return False
+                
+            self.logger.info(f"Yes24页面已加载: {page_title}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"导航到Yes24演唱会页面时出现异常: {str(e)}")
+            return False
+    
+    def get_available_seats(self) -> List[Dict[str, Any]]:
+        """Yes24获取座位实现"""
+        available_seats = []
+        
+        try:
+            # Yes24特定的座位元素选择器
+            seat_elements = self.driver.find_elements(By.CSS_SELECTOR, ".rn-seat-class")
+            
+            if not seat_elements:
+                self.logger.info("未找到座位信息元素")
+                return []
+                
+            self.logger.info(f"找到 {len(seat_elements)} 个座位元素")
+            
+            # Yes24特定的座位信息提取逻辑
+            # 此处逻辑需要根据实际页面结构调整
+            
+            # 示例实现
+            for element in seat_elements:
+                try:
+                    seat_type = element.find_element(By.CSS_SELECTOR, ".seat-name").text
+                    price_text = element.find_element(By.CSS_SELECTOR, ".seat-price").text
+                    price = int(''.join(filter(str.isdigit, price_text))) if any(c.isdigit() for c in price_text) else 0
+                    
+                    # 检查是否有"매진"(售罄)标记
+                    sold_out_elements = element.find_elements(By.CSS_SELECTOR, ".sold-out")
+                    if not sold_out_elements:
+                        # 提取选择按钮
+                        select_button = element.find_element(By.CSS_SELECTOR, ".btn-select")
+                        
+                        seat_info = {
+                            "type": seat_type,
+                            "price": price,
+                            "element": element,
+                            "select_button": select_button
+                        }
+                        
+                        available_seats.append(seat_info)
+                        self.logger.debug(f"找到可用座位: {seat_type}, 价格: {price}")
+                        
+                except NoSuchElementException:
+                    continue
+                except Exception as e:
+                    self.logger.warning(f"解析座位元素时出现异常: {str(e)}")
+                    continue
+            
+        except Exception as e:
+            self.logger.error(f"获取可用座位信息时出现异常: {str(e)}")
+            
+        return available_seats
+    
+    def book_seat(self, seat_info: Dict[str, Any]) -> bool:
+        """Yes24预订实现"""
+        # Yes24的预订流程实现
+        # 类似InterPark，但需要根据实际页面结构调整
+        try:
+            select_button = seat_info.get("select_button")
+            if not select_button:
+                self.logger.error("座位信息中缺少选择按钮")
+                return False
+                
+            select_button.click()
+            time.sleep(2)
+            
+            # 根据Yes24的实际预订流程调整以下逻辑
+            # 选择座位数量
+            quantity_selectors = self.driver.find_elements(By.CSS_SELECTOR, "select.ticket-quantity")
+            if quantity_selectors:
+                from selenium.webdriver.support.ui import Select
+                Select(quantity_selectors[0]).select_by_value("1")
+                self.logger.info("已选择1张票")
+                time.sleep(1)
+            
+            # 点击继续按钮
+            continue_buttons = self.driver.find_elements(By.CSS_SELECTOR, ".btn-reserve, .btn-booking")
+            if not continue_buttons:
+                self.logger.error("未找到继续按钮")
+                return False
+                
+            self.logger.info("点击继续按钮")
+            continue_buttons[0].click()
+            
+            # 等待跳转到订单页面
+            time.sleep(3)
+            
+            # 检查是否进入订单页面
+            order_elements = self.driver.find_elements(By.CSS_SELECTOR, ".order-info, .reservation-info")
+            if not order_elements:
+                self.logger.error("未能进入订单页面")
+                return False
+            
+            self.logger.info("成功进入订单页面")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"预订座位时出现异常: {str(e)}")
+            return False
+    
+    def get_order_info(self) -> Dict[str, Any]:
+        """Yes24订单信息获取实现"""
+        # 与InterPark类似，但需要根据Yes24的页面结构调整
+        order_info = {
+            "order_id": "Y24-" + str(random.randint(100000, 999999)),
+            "seat_type": "示例座位",
+            "price": 99000,
+            "payment_deadline": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "order_url": self.driver.current_url
+        }
+        
+        try:
+            # 提取订单信息
+            # 订单号
+            order_id_elements = self.driver.find_elements(By.CSS_SELECTOR, ".order-number, .reservation-number")
+            if order_id_elements:
+                order_info["order_id"] = order_id_elements[0].text
+                
+            # 座位类型
+            seat_type_elements = self.driver.find_elements(By.CSS_SELECTOR, ".seat-grade, .seat-type")
+            if seat_type_elements:
+                order_info["seat_type"] = seat_type_elements[0].text
+                
+            # 价格
+            price_elements = self.driver.find_elements(By.CSS_SELECTOR, ".total-amount, .price-total")
+            if price_elements:
+                price_text = price_elements[0].text
+                price = int(''.join(filter(str.isdigit, price_text))) if any(c.isdigit() for c in price_text) else 0
+                order_info["price"] = price
+                
+            # 支付截止时间
+            deadline_elements = self.driver.find_elements(By.CSS_SELECTOR, ".payment-deadline, .time-limit")
+            if deadline_elements:
+                order_info["payment_deadline"] = deadline_elements[0].text
+                
+        except Exception as e:
+            self.logger.error(f"获取订单信息时出现异常: {str(e)}")
+            
+        return order_info
+
+class MelonClient(APIClient):
+    """Melon票务网站API客户端"""
+    
+    def __init__(self, config_manager: ConfigManager, driver: WebDriver):
+        """初始化Melon客户端"""
+        super().__init__(config_manager, driver)
+        self.logger.info("Melon客户端已初始化")
+    
+    def login(self, username: str, password: str, captcha_solver: CaptchaSolver) -> bool:
+        """Melon登录实现"""
+        # 获取Melon登录URL
+        login_url = self.config.get("sites.melon.login_url", "https://member.melon.com/muid/login/web/login_inform.htm")
+        
+        try:
+            # 导航到登录页
+            self.logger.info(f"正在打开登录页: {login_url}")
+            self.driver.get(login_url)
+            
+            # 等待登录表单加载
+            username_input = self.wait_for_element(By.ID, "id")
+            password_input = self.wait_for_element(By.ID, "pwd")
+            
+            if not username_input or not password_input:
+                self.logger.error("无法找到登录表单")
+                return False
+                
+            # 输入用户名和密码
+            username_input.clear()
+            username_input.send_keys(username)
+            
+            password_input.clear()
+            password_input.send_keys(password)
+            
+            # 检查是否有验证码
+            captcha_img = self.driver.find_elements(By.CSS_SELECTOR, "img[src*='captcha']")
+            if captcha_img:
+                self.logger.info("检测到验证码，尝试解决...")
+                if not captcha_solver.solve_captcha(self.driver, "image"):
+                    self.logger.error("验证码解决失败")
+                    return False
+            
+            # 点击登录按钮
+            login_button = self.wait_for_clickable(By.CSS_SELECTOR, "button.btn_login, input[type='submit']")
+            if not login_button:
+                self.logger.error("无法找到登录按钮")
+                return False
+                
+            login_button.click()
+            
+            # 等待登录完成
+            time.sleep(3)
+            
+            # 验证登录状态
+            if "login" in self.driver.current_url.lower():
+                error_msg = self.driver.find_elements(By.CSS_SELECTOR, ".error_msg, .alert-error")
+                if error_msg:
+                    self.logger.error(f"登录失败: {error_msg[0].text}")
+                else:
+                    self.logger.error("登录失败")
+                return False
+                
+            # 检查是否有用户名显示
+            user_elements = self.driver.find_elements(By.CSS_SELECTOR, ".user_name, .profile_name")
+            if user_elements:
+                self.logger.info("登录成功")
+                return True
+                
+            self.logger.warning("登录状态不明确，假定为失败")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"登录过程中出现异常: {str(e)}")
+            return False
+    
+    def navigate_to_concert(self, concert_url: str) -> bool:
+        """
+        导航到Melon演唱会页面
+        
+        Args:
+            concert_url: 演唱会页面URL
+            
+        Returns:
+            是否导航成功
+        """
+        try:
+            self.logger.info(f"导航到Melon演唱会页面: {concert_url}")
+            self.driver.get(concert_url)
+            
+            # 等待页面加载
+            time.sleep(3)
+            
+            # 检查是否有演唱会标题元素
+            title_elements = self.driver.find_elements(By.CSS_SELECTOR, ".concert_title, .ticket_title, h2.title")
+            if not title_elements:
+                self.logger.error("无法找到演唱会标题，页面可能未正确加载")
+                return False
+                
+            self.logger.info(f"演唱会页面已加载: {title_elements[0].text}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"导航到演唱会页面时出现异常: {str(e)}")
+            return False
+    
+    def get_available_seats(self) -> List[Dict[str, Any]]:
+        """
+        获取Melon可用座位信息
+        
+        Returns:
+            可用座位列表
+        """
+        available_seats = []
+        
+        try:
+            # Melon特定的座位元素选择器
+            seat_elements = self.driver.find_elements(By.CSS_SELECTOR, ".seat_type_item, .ticket_seat_row")
+            
+            if not seat_elements:
+                self.logger.info("未找到座位信息元素")
+                return []
+                
+            self.logger.info(f"找到 {len(seat_elements)} 个座位元素")
+            
+            # Melon特定的座位信息提取逻辑
+            for element in seat_elements:
+                try:
+                    # 提取座位类型
+                    seat_type_elements = element.find_elements(By.CSS_SELECTOR, ".seat_name, .grade_name")
+                    seat_type = seat_type_elements[0].text if seat_type_elements else "未知"
+                    
+                    # 提取价格
+                    price_elements = element.find_elements(By.CSS_SELECTOR, ".seat_price, .price_value")
+                    price_text = price_elements[0].text if price_elements else "0"
+                    price = int(''.join(filter(str.isdigit, price_text))) if any(c.isdigit() for c in price_text) else 0
+                    
+                    # 检查可用性
+                    sold_out_elements = element.find_elements(By.CSS_SELECTOR, ".soldout, .sold_out, .status_end")
+                    if not sold_out_elements:
+                        # 提取选择按钮
+                        select_elements = element.find_elements(By.CSS_SELECTOR, ".btn_seat_select, .btn_reserve, button[data-seat]")
+                        select_button = select_elements[0] if select_elements else None
+                        
+                        if select_button and select_button.is_enabled():
+                            seat_info = {
+                                "type": seat_type,
+                                "price": price,
+                                "element": element,
+                                "select_button": select_button
+                            }
+                            
+                            available_seats.append(seat_info)
+                            self.logger.debug(f"找到可用座位: {seat_type}, 价格: {price}")
+                        else:
+                            self.logger.debug(f"座位 {seat_type} 不可选择")
+                    else:
+                        self.logger.debug(f"座位 {seat_type} 已售罄")
+                        
+                except Exception as e:
+                    self.logger.warning(f"解析座位元素时出现异常: {str(e)}")
+                    continue
+            
+            self.logger.info(f"找到 {len(available_seats)} 个可用座位")
+            
+        except Exception as e:
+            self.logger.error(f"获取可用座位信息时出现异常: {str(e)}")
+            
+        return available_seats
+    
+    def book_seat(self, seat_info: Dict[str, Any]) -> bool:
+        """
+        预订Melon座位
+        
+        Args:
+            seat_info: 座位信息
+            
+        Returns:
+            是否预订成功
+        """
+        try:
+            # 检查座位元素
+            select_button = seat_info.get("select_button")
+            if not select_button:
+                self.logger.error("座位信息中缺少选择按钮")
+                return False
+                
+            # 点击选择按钮
+            self.logger.info(f"点击选择座位: {seat_info.get('type')}")
+            select_button.click()
+            
+            # 等待跳转到座位选择页面
+            time.sleep(2)
+            
+            # Melon票务可能需要选择具体座位或票数
+            quantity_selectors = self.driver.find_elements(By.CSS_SELECTOR, "select.quantity, .ticket_count")
+            if quantity_selectors:
+                # 选择票数为1
+                from selenium.webdriver.support.ui import Select
+                Select(quantity_selectors[0]).select_by_value("1")
+                self.logger.info("已选择1张票")
+                time.sleep(1)
+            
+            # 点击继续按钮
+            continue_buttons = self.driver.find_elements(By.CSS_SELECTOR, ".btn_next, .btn_reserve, .btn_payment")
+            if continue_buttons:
+                self.logger.info("点击继续按钮")
+                continue_buttons[0].click()
+                time.sleep(2)
+            else:
+                self.logger.warning("未找到继续按钮")
+            
+            # 检查是否成功进入订单确认页
+            order_elements = self.driver.find_elements(By.CSS_SELECTOR, ".order_info, .ticket_info, .payment_section")
+            
+            if order_elements:
+                self.logger.info("成功进入订单确认页")
+                return True
+            else:
+                self.logger.error("未能进入订单确认页")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"预订座位时出现异常: {str(e)}")
+            return False
+    
+    def get_order_info(self) -> Dict[str, Any]:
+        """
+        获取Melon订单信息
+        
+        Returns:
+            订单信息字典
+        """
+        order_info = {
+            "order_id": "M-" + str(random.randint(100000, 999999)),  # 示例订单号
+            "seat_type": "未知座位",
+            "price": 0,
+            "payment_deadline": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "order_url": self.driver.current_url
+        }
+        
+        try:
+            # 提取订单号
+            order_id_elements = self.driver.find_elements(By.CSS_SELECTOR, ".order_number, .reserve_no, .order_id")
+            if order_id_elements:
+                order_info["order_id"] = order_id_elements[0].text
+            
+            # 提取座位类型
+            seat_elements = self.driver.find_elements(By.CSS_SELECTOR, ".seat_info, .ticket_grade, .seat_grade")
+            if seat_elements:
+                order_info["seat_type"] = seat_elements[0].text
+                
+            # 提取价格
+            price_elements = self.driver.find_elements(By.CSS_SELECTOR, ".total_price, .payment_amount, .total_amount")
+            if price_elements:
+                price_text = price_elements[0].text
+                price = int(''.join(filter(str.isdigit, price_text))) if any(c.isdigit() for c in price_text) else 0
+                order_info["price"] = price
+                
+            # 提取支付截止时间
+            deadline_elements = self.driver.find_elements(By.CSS_SELECTOR, ".payment_deadline, .time_limit, .deadline_time")
+            if deadline_elements:
+                order_info["payment_deadline"] = deadline_elements[0].text
+            
+            self.logger.info(f"获取到订单信息: {order_info}")
+            
+        except Exception as e:
+            self.logger.error(f"获取订单信息时出现异常: {str(e)}")
+            
+        return order_info

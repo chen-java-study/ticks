@@ -1,0 +1,93 @@
+{
+  "app": {
+    "name": "韩国演唱会抢票助手",
+    "version": "1.0.0",
+    "language": "zh_CN"
+  },
+  "browser": {
+    "headless": false,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "timeout": 30,
+    "implicit_wait": 10
+  },
+  "ticketing": {
+    "sites": {
+      "interpark": {
+        "name": "Interpark",
+        "url": "https://tickets.interpark.com",
+        "login_url": "https://tickets.interpark.com/user/login",
+        "search_url": "https://tickets.interpark.com/search"
+      },
+      "yes24": {
+        "name": "Yes24",
+        "url": "https://ticket.yes24.com",
+        "login_url": "https://ticket.yes24.com/Login",
+        "search_url": "https://ticket.yes24.com/Search"
+      },
+      "melon": {
+        "name": "Melon Ticket",
+        "url": "https://ticket.melon.com",
+        "login_url": "https://ticket.melon.com/login",
+        "search_url": "https://ticket.melon.com/search"
+      }
+    },
+    "default_site": "interpark",
+    "auto_refresh": true,
+    "refresh_interval": 0.5,
+    "max_retries": 3,
+    "retry_delay": 1.0
+  },
+  "user": {
+    "username": "",
+    "password": "",
+    "auto_login": false
+  },
+  "tickets": {
+    "max_price": 0,
+    "preferred_seats": [],
+    "seat_preferences": {
+      "front_row": true,
+      "center_section": true,
+      "vip_section": false
+    }
+  },
+  "proxy": {
+    "enabled": false,
+    "host": "",
+    "port": 0,
+    "username": "",
+    "password": ""
+  },
+  "notification": {
+    "email": {
+      "enabled": false,
+      "smtp_server": "",
+      "smtp_port": 587,
+      "sender": "",
+      "password": "",
+      "recipient": ""
+    },
+    "telegram": {
+      "enabled": false,
+      "bot_token": "",
+      "chat_id": ""
+    },
+    "desktop": {
+      "enabled": true,
+      "sound": true
+    }
+  },
+  "captcha": {
+    "auto_solve": true,
+    "service": "2captcha",
+    "api_key": "",
+    "timeout": 60
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "logs/ticket_bot.log",
+    "max_size": "10MB",
+    "backup_count": 5
+  },
+  "concerts": []
+}

@@ -1,0 +1,55 @@
+d:\ticks\
+│
+├── python/               # Python代码目录
+│   ├── core/             # 核心功能模块
+│   │   ├── __init__.py
+│   │   ├── ticket_bot.py     # 抢票机器人核心类
+│   │   ├── captcha_solver.py # 验证码处理模块
+│   │   └── api_client.py     # 与票务网站API交互的客户端
+│   │
+│   ├── ui/               # 用户界面模块
+│   │   ├── __init__.py
+│   │   ├── main_window.py    # 主窗口
+│   │   ├── settings_dialog.py # 设置对话框
+│   │   └── resources/         # UI资源文件
+│   │
+│   ├── utils/            # 工具类
+│   │   ├── __init__.py
+│   │   ├── config_manager.py # 配置管理类
+│   │   ├── logger.py         # 日志管理
+│   │   └── notification.py   # 通知功能
+│   │
+│   ├── __init__.py
+│   ├── main.py           # 入口文件
+│   └── requirements.txt  # Python依赖
+│
+├── go/                   # Go代码目录
+│   ├── cmd/              # 命令行程序
+│   │   └── ticket_grabber/ # 抢票主程序
+│   │       └── main.go
+│   │
+│   ├── pkg/              # 可重用的包
+│   │   ├── models/       # 数据模型
+│   │   ├── api/          # API客户端
+│   │   └── browser/      # 浏览器自动化
+│   │
+│   ├── go.mod            # Go模块定义
+│   └── go.sum            # Go模块校验和
+│
+├── config/               # 配置文件目录
+│   ├── default_config.json # 默认配置
+│   └── config.json       # 用户配置
+│
+├── logs/                 # 日志目录
+├── build.py              # 构建脚本
+├── README.md             # 项目说明文档
+├── .gitignore            # Git忽略文件
+└── requirements.txt      # 项目级Python依赖
+
+
+使用批处理文件（推荐）：
+ start.bat
+直接使用Python：
+   venv\Scripts\python.exe run.py
+带参数运行：
+ venv\Scripts\python.exe run.py --debug
